@@ -1,0 +1,8 @@
+
+<div id="orderItemPrintView">
+ <link rel="stylesheet" href="{% make_url "cdn" "/stylesheets/modules/my-account/order-print.less" %}" title="default" media="print" />
+
+{% include "modules/common/order-listing"%}
+
+ <script src="{% make_url "cdn" "/scripts/modules/order-print.js" %}"></script>
+</div>

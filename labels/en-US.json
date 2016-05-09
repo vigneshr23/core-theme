@@ -309,6 +309,7 @@
   "returnNumber"         : "RMA #",
   "enterStoreCredit"     : "Enter Store Credit Number",
   "storeCreditNumber"    : "Store Credit Number",
+  "printOrder"           : "Print Order",
 
   "enterDigitalCredit"   : "Enter Gift Card or Store Credit Code",
   "digitalCreditAvailable"  : "You have the following gift cards & store credits available:",

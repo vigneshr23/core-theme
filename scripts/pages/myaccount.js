@@ -178,6 +178,17 @@
                     self.render();
                 });
             }
+        },
+        printOrder :function(e) {
+             var self= this, 
+             $target = $(e.currentTarget),
+             orderId = $target.data('mzOrderId');
+             var order = self.model.get('items').where({ id: orderId });
+             var printOrderView =  new PrintOrderView({
+                model: order[0]
+            });
+            printOrderView.render();
+            printOrderView.printOrderView();
         }
     }),
 
@@ -191,6 +202,29 @@
                 if ($retView.length === 0) $retView = self.$el;
                 $retView.ScrollTo({ axis: 'y' });
             });
+        }
+    });
+
+     var PrintOrderView = Backbone.MozuView.extend({
+        templateName: "modules/my-account/order-item-print",
+        el: $('#mz-printOrder'),
+        initialize: function () {
+        },
+        afterRender: function () {
+            this.printOrderView();
+        },
+        printOrderView: function(){
+            var width = window.screen.width - 200,
+            height = window.screen.height - 200,
+            offset = 100;
+            
+            my_window = window.open("", "mywindow",'width=' + width + ',height=' + height + ',top=' + offset + ',left=' + offset + ',status=1');
+            my_window.document.write('<html><head><title>Print Order Page</title></head>');
+            my_window.document.write('<body onafterprint="window.close()">');
+            my_window.document.write($('#mz-printOrder').html());
+            my_window.document.write('</body></html>');  
+            my_window.print();
+
         }
     });
 

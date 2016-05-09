@@ -26,6 +26,7 @@
             {% endif %}
             {% endblock order-shipped-to %}
         </dl>
+         <div class="mz-printOrderButton"><a href="javascript:;" data-mz-order-id="{{ model.id }}" data-mz-action="printOrder">{{ labels.printOrder }}</a></div>
         {% endblock order-details %}
     </div>
     <div class="mz-orderlisting-items">
