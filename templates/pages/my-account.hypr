@@ -69,7 +69,7 @@
             {% include "modules/my-account/my-account-storecredit" %}
         </div>
 
-        <div id="mz-printOrder">
+        <div id="mz-printOrder" style="display:none;">
         </div>
 
 		{% dropzone "my-account-bottom" scope="template" %}
