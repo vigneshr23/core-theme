@@ -1,4 +1,6 @@
-﻿define(["modules/jquery-mozu", "underscore", "modules/backbone-mozu", "hyprlive", "modules/models-price", "modules/api"], function($, _, Backbone, Hypr, PriceModels, api) {
+define(["modules/jquery-mozu", "underscore", "modules/backbone-mozu", "hyprlive", "modules/models-price", "modules/api",
+    "hyprlivecontext"], function($, _, Backbone, Hypr, PriceModels, api,
+        HyprLiveContext) {
 
     function zeroPad(str, len) {
         str = str.toString();
@@ -12,7 +14,6 @@
 
 
     var ProductOption = Backbone.MozuModel.extend({
-        idAttribute: "attributeFQN",
         helpers: ['isChecked'],
         initialize: function() {
             var me = this;
@@ -139,7 +140,7 @@
             return j;
         },
         addConfiguration: function(biscuit, options) {
-            var fqn, value, attributeDetail, valueKey, pushConfigObject;
+            var fqn, value, attributeDetail, valueKey, pushConfigObject, optionName;
             if (this.isConfigured()) {
                 if (options && options.unabridged) {
                     biscuit.push(this.toJSON());
@@ -147,11 +148,13 @@
                     fqn = this.get('attributeFQN');
                     value = this.getValueOrShopperEnteredValue();
                     attributeDetail = this.get('attributeDetail');
+                    optionName = attributeDetail.name;
                     valueKey = attributeDetail.valueType === ProductOption.Constants.ValueTypes.ShopperEntered ? "shopperEnteredValue" : "value";
                     if (attributeDetail.dataType === "Number") value = parseFloat(value);
                     pushConfigObject = function(val) {
                         var o = {
-                            attributeFQN: fqn
+                            attributeFQN: fqn,
+                            name: optionName
                         };
                         o[valueKey] = val;
                         biscuit.push(o);
@@ -270,7 +273,7 @@
                 }
             }
             this.updateConfiguration = _.debounce(this.updateConfiguration, 300);
-            this.set({ url: slug ? "/" + slug + "/p/" + this.get("productCode") : "/p/" + this.get("productCode") });
+            this.set({ url: (HyprLiveContext.locals.siteContext.siteSubdirectory || '') + (slug ? "/" + slug : "") +  "/p/" + this.get("productCode")});
             this.lastConfiguration = [];
             this.calculateHasPriceRange(conf);
             this.on('sync', this.calculateHasPriceRange);
@@ -327,19 +330,21 @@
                 if (!me.validate()) {
                     me.apiAddToWishlist({
                         customerAccountId: require.mozuData('user').accountId,
-                        quantity: me.get("quantity")
+                        quantity: me.get("quantity"),
+                        options: me.getConfiguredOptions()
                     }).then(function(item) {
                         me.trigger('addedtowishlist', item);
                     });
                 }
             });
         },
-        addToCartForPickup: function(locationCode, quantity) {
+        addToCartForPickup: function(locationCode, locationName, quantity) {
             var me = this;
             this.whenReady(function() {
                 return me.apiAddToCartForPickup({
                     fulfillmentLocationCode: locationCode,
                     fulfillmentMethod: Product.Constants.FulfillmentMethods.PICKUP,
+                    fulfillmentLocationName: locationName,
                     quantity: quantity || 1
                 }).then(function(item) {
                     me.trigger('addedtocart', item);
@@ -439,5 +444,3 @@
     };
 
 });
-
-

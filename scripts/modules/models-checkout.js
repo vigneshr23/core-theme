@@ -12,7 +12,7 @@
     function ($, _, Hypr, Backbone, api, CustomerModels, AddressModels, PaymentMethods, HyprLiveContext) {
 
         var CheckoutStep = Backbone.MozuModel.extend({
-            helpers: ['stepStatus', 'requiresFulfillmentInfo', 'requiresDigitalFulfillmentContact'],  //
+            helpers: ['stepStatus', 'requiresFulfillmentInfo','isNonMozuCheckout', 'requiresDigitalFulfillmentContact','isShippingEditHidden'],  //
             // instead of overriding constructor, we are creating
             // a method that only the CheckoutStepView knows to
             // run, so it can run late enough for the parent
@@ -58,6 +58,16 @@
             requiresFulfillmentInfo: function () {
                 return this.getOrder().get('requiresFulfillmentInfo');
             },
+            isNonMozuCheckout: function() {
+                var activePayments = this.getOrder().apiModel.getActivePayments();
+                if (activePayments && activePayments.length === 0) return false;
+                return (activePayments && (_.findWhere(activePayments, { paymentType: 'PayPalExpress2' })));
+            },
+            isShippingEditHidden: function() {
+                if (HyprLiveContext.locals.themeSettings.changeShipping) return false;
+
+                return this.isNonMozuCheckout();
+            },
             requiresDigitalFulfillmentContact: function () {
                 return this.getOrder().get('requiresDigitalFulfillmentContact');
             },
@@ -76,7 +86,7 @@
                 'email': {
                     pattern: 'email',
                     msg: Hypr.getLabel('emailMissing')
-                } 
+                }
             },
             dataTypes: {
                 contactId: function(val) {
@@ -153,7 +163,7 @@
 
                 var validationObj = this.validate();
 
-                if (validationObj) { 
+                if (validationObj) {
                     Object.keys(validationObj).forEach(function(key){
                         this.trigger('error', {message: validationObj[key]});
                     }, this);
@@ -176,11 +186,26 @@
                         return parent.refreshShippingMethods(methods);
                     }).ensure(function () {
                         addr.set('candidateValidatedAddresses', null);
-                        me.isLoading(false);
-                        parent.isLoading(false);
-                        me.calculateStepStatus();
-                        parent.calculateStepStatus();
-                    });                  
+                        
+                        var currentPayment = order.apiModel.getCurrentPayment();
+                        if (currentPayment && order.get('billingInfo').get('isSameBillingShippingAddress')) {
+                            order.apiVoidPayment(currentPayment.id).then(function(){
+                                    order.get('billingInfo').applyPayment().then(function(){
+                                    order.get('billingInfo').get('billingContact').set(order.get('fulfillmentInfo').get('fulfillmentContact').toJSON());
+                                }).ensure(function () {
+                                    me.isLoading(false);
+                                    parent.isLoading(false);
+                                    me.calculateStepStatus();
+                                    parent.calculateStepStatus();
+                                });
+                            });
+                        } else {
+                            me.isLoading(false);
+                            parent.isLoading(false);
+                            me.calculateStepStatus();
+                            parent.calculateStepStatus();
+                        }
+                    });
                 };
 
                 var promptValidatedAddress = function () {
@@ -195,6 +220,7 @@
                 } else {
                     if (!addr.get('candidateValidatedAddresses')) {
                         var methodToUse = allowInvalidAddresses ? 'validateAddressLenient' : 'validateAddress';
+                        addr.syncApiModel();
                         addr.apiModel[methodToUse]().then(function (resp) {
                             if (resp.data && resp.data.addressCandidates && resp.data.addressCandidates.length) {
                                 if (_.find(resp.data.addressCandidates, addr.is, addr)) {
@@ -309,6 +335,14 @@
                             if(resetMessage) {
                                 me.parent.messages.reset(me.parent.get('messages'));
                             }
+
+                            //In order to resync our billing address with shipping.
+                            //Not a great fix, look into correcting.
+                            if(order.get('billingInfo').get('isSameBillingShippingAddress')) {
+                                order.get('billingInfo').get('billingContact').set(order.get('fulfillmentInfo').get('fulfillmentContact').toJSON());
+                                order.get('billingInfo').trigger('billingContactUpdate');
+                            }
+
                         });
                 }
             },
@@ -360,14 +394,20 @@
 
             },
             helpers: ['acceptsMarketing', 'savedPaymentMethods', 'availableStoreCredits', 'applyingCredit', 'maxCreditAmountToApply',
-              'activeStoreCredits', 'nonStoreCreditTotal', 'activePayments', 'hasSavedCardPayment', 'availableDigitalCredits', 'digitalCreditPaymentTotal', 'isAnonymousShopper', 'visaCheckoutFlowComplete'],
+              'activeStoreCredits', 'nonStoreCreditTotal', 'activePayments', 'hasSavedCardPayment', 'availableDigitalCredits', 'digitalCreditPaymentTotal', 'isAnonymousShopper', 'visaCheckoutFlowComplete','isExternalCheckoutFlowComplete', 'checkoutFlow'],
             acceptsMarketing: function () {
                 return this.getOrder().get('acceptsMarketing');
+            },
+            isExternalCheckoutFlowComplete: function () {
+                return this.get('paymentWorkflow') !== "Mozu";
             },
             visaCheckoutFlowComplete: function() {
                 return this.get('paymentWorkflow') === 'VisaCheckout';
             },
-            cancelVisaCheckout: function() {
+            checkoutFlow: function () {
+                return this.get('paymentWorkflow');
+            },
+            cancelExternalCheckout: function() {
                 var self = this;
                 var order = this.getOrder();
                 var currentPayment = order.apiModel.getCurrentPayment();
@@ -452,7 +492,7 @@
                         this.set('creditAmountToApply', this.maxCreditAmountToApply());
                     }
                 }
-            },            
+            },
             closeApplyCredit: function () {
                 delete this._applyingCredit;
                 this.unset('selectedCredit');
@@ -470,7 +510,6 @@
                     return order.update();
                 });
             },
-
             // digital
 
             onCreditAmountChanged: function(digCredit, amt) {
@@ -488,7 +527,7 @@
                     var currentDate = new Date(),
                         unexpiredDate = new Date(2076, 6, 4);
 
-                    // todo: refactor so conversion & get can re-use - Greg Murray on 2014-07-01 
+                    // todo: refactor so conversion & get can re-use - Greg Murray on 2014-07-01
                     var invalidCredits = customerCredits.filter(function(cred) {
                         var credBalance = cred.get('currentBalance'),
                             credExpDate = cred.get('expirationDate');
@@ -534,7 +573,7 @@
             },
 
             availableDigitalCredits: function () {
-                if (! this._cachedDigitalCredits) { 
+                if (! this._cachedDigitalCredits) {
                     this.loadCustomerDigitalCredits();
                 }
                 return this._cachedDigitalCredits && this._cachedDigitalCredits.length > 0 && this._cachedDigitalCredits;
@@ -579,7 +618,7 @@
                 if (!creditAmountToApply && creditAmountToApply !== 0) {
                     creditAmountToApply = self.getMaxCreditToApply(digitalCredit, self);
                 }
-                
+
                 digitalCredit.set('creditAmountApplied', creditAmountToApply);
                 digitalCredit.set('remainingBalance',  digitalCredit.calculateRemainingBalance());
                 digitalCredit.set('isEnabled', isEnabled);
@@ -620,7 +659,7 @@
                             }
                             return order.apiVoidPayment(sameCreditPayment.id).then(function (o) {
                                 order.set(o.data);
-                                
+
                                 return order.apiAddStoreCredit({
                                     storeCreditCode: creditCode,
                                     amount: creditAmountToApply
@@ -665,8 +704,8 @@
             },
 
             areNumbersEqual: function(f1, f2) {
-                var epsilon = 0.01; 
-                return (Math.abs(f1 - f2)) < epsilon; 
+                var epsilon = 0.01;
+                return (Math.abs(f1 - f2)) < epsilon;
             },
 
             retrieveDigitalCredit: function (customer, creditCode, me, amountRequested) {
@@ -680,7 +719,7 @@
                             activationDate = creditModel.get('activationDate') ? new Date(creditModel.get('activationDate')) : null,
                             expDate = creditModel.get('expirationDate') ? new Date(creditModel.get('expirationDate')) : null;
                         if (expDate && expDate < now) {
-                            return self.deferredError(Hypr.getLabel('expiredCredit', expDate.toLocaleDateString()), self);
+                            return self.deferredError(Hypr.getLabel('digitalCreditExpired', expDate.toLocaleDateString()), self);
                         }
                         if (activationDate && activationDate > now) {
                             return self.deferredError(Hypr.getLabel('digitalCreditNotYetActive', activationDate.toLocaleDateString()), self);
@@ -695,7 +734,7 @@
                     if (validate !== null) {
                         return null;
                     }
-                    
+
                     var maxAmt = me.getMaxCreditToApply(creditModel, me, amountRequested);
                     if (!!amountRequested && amountRequested < maxAmt) {
                         maxAmt = amountRequested;
@@ -828,7 +867,7 @@
                     currentPurchaseOrder = currentPayment && currentPayment.billingInfo.purchaseorder,
                     purchaseOrderSiteSettings = HyprLiveContext.locals.siteContext.checkoutSettings.purchaseOrder ?
                         HyprLiveContext.locals.siteContext.checkoutSettings.purchaseOrder.isEnabled : false,
-                    purchaseOrderCustomerSettings = this.getOrder().get('customer').get('purchaseOrder') ? 
+                    purchaseOrderCustomerSettings = this.getOrder().get('customer').get('purchaseOrder') ?
                         this.getOrder().get('customer').get('purchaseOrder').isEnabled : false;
 
                 if(purchaseOrderSiteSettings && purchaseOrderCustomerSettings && !currentPayment) {
@@ -882,6 +921,16 @@
 
                 return purchaseOrderEnabled;
             },
+            resetPOInfo: function() {
+                var me = this,
+                    currentPurchaseOrder = me.get('purchaseOrder');
+
+                currentPurchaseOrder.get('paymentTermOptions').reset();
+                currentPurchaseOrder.get('customFields').reset();
+                currentPurchaseOrder.get('paymentTerm').clear();
+
+                this.setPurchaseOrderInfo();
+            },
             setPurchaseOrderInfo: function() {
                 var me = this,
                     order = me.getOrder(),
@@ -917,9 +966,7 @@
                 var amount = purchaseOrderInfo.totalAvailableBalance > order.get('amountRemainingForPayment') ?
                         order.get('amountRemainingForPayment') : purchaseOrderInfo.totalAvailableBalance;
 
-                if(!currentPurchaseOrderAmount || currentPurchaseOrderAmount !== amount) {
-                    currentPurchaseOrder.set('amount', amount);
-                }
+                currentPurchaseOrder.set('amount', amount);
 
                 currentPurchaseOrder.set('totalAvailableBalance', purchaseOrderInfo.totalAvailableBalance);
                 currentPurchaseOrder.set('availableBalance', purchaseOrderInfo.availableBalance);
@@ -929,21 +976,19 @@
                     currentPurchaseOrder.set('splitPayment', true);
                 }
 
-                if(currentPurchaseOrder.get('paymentTermOptions').length === 0) {
-                    var paymentTerms = [];
-                    purchaseOrderInfo.paymentTerms.forEach(function(term) {
-                        if(term.siteId === siteId) {
-                            var newTerm = {};
-                            newTerm.code = term.code;
-                            newTerm.description = term.description;
-                            paymentTerms.push(term);
-                        }
-                    });
-                    currentPurchaseOrder.set('paymentTermOptions', paymentTerms, {silent: true});
-                }
+                var paymentTerms = [];
+                purchaseOrderInfo.paymentTerms.forEach(function(term) {
+                    if(term.siteId === siteId) {
+                        var newTerm = {};
+                        newTerm.code = term.code;
+                        newTerm.description = term.description;
+                        paymentTerms.push(term);
+                    }
+                });
+                currentPurchaseOrder.set('paymentTermOptions', paymentTerms, {silent: true});
 
                 var paymentTermOptions = currentPurchaseOrder.get('paymentTermOptions');
-                if(!currentPurchaseOrder.get('paymentTerm').get('code') && paymentTermOptions.length === 1) {
+                if(paymentTermOptions.length === 1) {
                     var paymentTerm = {};
                     paymentTerm.code = paymentTermOptions.models[0].get('code');
                     paymentTerm.description = paymentTermOptions.models[0].get('description');
@@ -962,7 +1007,7 @@
                     if(currentPurchaseOrder.selected && contacts.length > 0) {
                         var foundBillingContact = contacts.models.find(function(item){
                             return item.get('isPrimaryBillingContact');
-                                
+
                         });
 
                         if(foundBillingContact) {
@@ -1013,6 +1058,12 @@
                 this.on('change:isSameBillingShippingAddress', function (model, wellIsIt) {
                     if (wellIsIt) {
                         billingContact.set(this.parent.get('fulfillmentInfo').get('fulfillmentContact').toJSON(), { silent: true });
+                    } else if (billingContact) {
+                        // if they initially checked the checkbox, then later they decided to uncheck it... remove the id so that updates don't update
+                        // the original address, instead create a new contact address.
+                        // We also unset contactId to prevent id from getting reset later.
+                        billingContact.unset('id', { silent: true });
+                        billingContact.unset('contactId', { silent: true });
                     }
                 });
                 this.on('change:savedPaymentMethodId', this.syncPaymentMethod);
@@ -1021,7 +1072,7 @@
                 _.bindAll(this, 'applyPayment', 'markComplete');
             },
             selectPaymentType: function(me, newPaymentType) {
-                if (!me.changed || !me.changed.paymentWorkflow) {
+                if ((!me.changed || !me.changed.paymentWorkflow) && !me.get('paymentWorkflow')) {
                     me.set('paymentWorkflow', 'Mozu');
                 }
                 me.get('check').selected = newPaymentType === 'Check';
@@ -1035,7 +1086,8 @@
                 if(me.isPurchaseOrderEnabled()) {
                     me.set('paymentType', 'PurchaseOrder');
                     me.selectPaymentType(me, 'PurchaseOrder');
-                } else {
+                } else if(!me.get('paymentType', 'check')) {
+
                     me.set('paymentType', 'CreditCard');
                     me.selectPaymentType(me, 'CreditCard');
                     if (me.savedPaymentMethods() && me.savedPaymentMethods().length > 0) {
@@ -1070,7 +1122,7 @@
                             'lastNameOrSurname',
                             'phoneNumbers'),
                         {
-                            address: obj.billingContact.address ? _.pick(obj.billingContact.address, 
+                            address: obj.billingContact.address ? _.pick(obj.billingContact.address,
                                 'address1',
                                 'address2',
                                 'addressType',
@@ -1101,11 +1153,11 @@
                 if (payment.paymentWorkflow === 'VisaCheckout') {
                     normalizedLiveBillingInfo.billingContact.address.addressType = normalizedSavedPaymentInfo.billingContact.address.addressType;
                 }
-                
+
                 return !_.isEqual(normalizedSavedPaymentInfo, normalizedLiveBillingInfo);
             },
             submit: function () {
-                
+
                 var order = this.getOrder();
                 // just can't sync these emails right
                 order.syncBillingAndCustomerEmail();
@@ -1190,14 +1242,14 @@
                     this.markComplete();
                 }
             },
+
             markComplete: function () {
                 this.stepStatus('complete');
                 this.isLoading(false);
                 var order = this.getOrder();
                 _.defer(function() {
-                    order.isReady(true);    
+                    order.isReady(true);
                 });
-                
             },
             toJSON: function(options) {
                 var j = CheckoutStep.prototype.toJSON.apply(this, arguments), loggedInEmail;
@@ -1238,6 +1290,23 @@
             };
         }
 
+        var storefrontOrderAttributes = require.mozuData('pagecontext').storefrontOrderAttributes;
+        if(storefrontOrderAttributes && storefrontOrderAttributes.length > 0){
+
+            var requiredAttributes = _.filter(storefrontOrderAttributes,
+                function(attr) { return attr.isRequired && attr.isVisible && attr.valueType !== 'AdminEntered' ;  });
+            requiredAttributes.forEach(function(attr) {
+                if(attr.isRequired) {
+
+                    checkoutPageValidation['orderAttribute-' + attr.attributeFQN] =
+                    {
+                        required: true,
+                        msg: attr.content.value + " " + Hypr.getLabel('missing')
+                    };
+                }
+            }, this);
+        }
+
         var CheckoutPage = Backbone.MozuModel.extend({
             mozuType: 'order',
             handlesMessages: true,
@@ -1259,6 +1328,7 @@
                     user = require.mozuData('user');
 
                 _.defer(function() {
+
                     var latestPayment = self.apiModel.getCurrentPayment(),
                         activePayments = self.apiModel.getActivePayments(),
                         fulfillmentInfo = self.get('fulfillmentInfo'),
@@ -1315,6 +1385,8 @@
                     var billingEmail = billingInfo.get('billingContact.email');
                     if (!billingEmail && user.email) billingInfo.set('billingContact.email', user.email);
 
+                    self.applyAttributes();
+
                 });
                 if (user.isAuthenticated) {
                     this.set('customer', { id: user.accountId });
@@ -1323,11 +1395,19 @@
                 if (data.acceptsMarketing === null) {
                     self.set('acceptsMarketing', true);
                 }
-                _.bindAll(this, 'update', 'onCheckoutSuccess', 'onCheckoutError', 'addNewCustomer', 'saveCustomerCard',/* 'finalPaymentReconcile', */'apiCheckout', 'addDigitalCreditToCustomerAccount', 'addCustomerContact', 'addBillingContact', 'addShippingContact', 'addShippingAndBillingContact');
 
-
+                _.bindAll(this, 'update', 'onCheckoutSuccess', 'onCheckoutError', 'addNewCustomer', 'saveCustomerCard', 'apiCheckout',
+                    'addDigitalCreditToCustomerAccount', 'addCustomerContact', 'addBillingContact', 'addShippingContact', 'addShippingAndBillingContact');
 
             },
+
+            applyAttributes: function() {
+                var storefrontOrderAttributes = require.mozuData('pagecontext').storefrontOrderAttributes;
+                if(storefrontOrderAttributes && storefrontOrderAttributes.length > 0) {
+                    this.set('orderAttributes', storefrontOrderAttributes);
+                }
+            },
+
             processDigitalWallet: function(digitalWalletType, payment) {
                 var me = this;
                 me.runForAllSteps(function() {
@@ -1354,7 +1434,7 @@
             },
             updateShippingInfo: function() {
                 var me = this;
-                this.apiModel.getShippingMethods().then(function (methods) { 
+                this.apiModel.getShippingMethods().then(function (methods) {
                     me.get('fulfillmentInfo').refreshShippingMethods(methods);
                 });
             },
@@ -1395,6 +1475,13 @@
                     me.get('billingInfo').trigger('sync');
                     me.set('couponCode', '');
 
+                    var autoAddSuggestedDiscount = me.get('suggestedDiscounts').some(function(discount){
+                      return discount.autoAdd;
+                    });
+                    if (me.get('suggestedDiscounts').length && autoAddSuggestedDiscount){
+                      window.location =  (HyprLiveContext.locals.siteContext.siteSubdirectory||'') + "/cart";
+                    }
+
                     var productDiscounts = _.flatten(_.pluck(me.get('items'), 'productDiscounts'));
                     var shippingDiscounts = _.flatten(_.pluck(_.flatten(_.pluck(me.get('items'), 'shippingDiscounts')), 'discount'));
                     var orderShippingDiscounts = _.flatten(_.pluck(me.get('shippingDiscounts'), 'discount'));
@@ -1415,6 +1502,7 @@
                     }
 
                     else if (me.get('total') === 0) {
+
                         me.trigger('complete');
                     }
                     // only do this when there isn't a payment on the order...
@@ -1431,13 +1519,33 @@
                     errorHandled = false;
                 order.isLoading(false);
                 if (!error || !error.items || error.items.length === 0) {
-                    error = {
-                        items: [
-                            {
-                                message: error.message || Hypr.getLabel('unknownError')
-                            }
-                        ]
-                    };
+                    if (error.message.indexOf('10486') != -1){
+
+                        var siteContext = HyprLiveContext.locals.siteContext,
+                            externalPayment = _.findWhere(siteContext.checkoutSettings.externalPaymentWorkflowSettings, {"name" : "PayPalExpress2"}),
+                            environment = _.findWhere(externalPayment.credentials, {"apiName" : "environment"}),
+                            url = "";
+
+                        if (environment.value.toLowerCase() === "sandbox"){
+                            url = "https://www.sandbox.paypal.com";
+                        }
+                        else{
+                            url = "https://www.paypal.com";
+                        }
+
+                        window.location.href = url + "/cgi-bin/webscr?cmd=_express-checkout&token=" + order.get('payments')[order.get('payments').length-1].externalTransactionId;
+
+                        return;
+                    }
+                    else {
+                        error = {
+                            items: [
+                                {
+                                    message: error.message || Hypr.getLabel('unknownError')
+                                }
+                            ]
+                        };
+                    }
                 }
                 $.each(error.items, function (ix, errorItem) {
                     if (errorItem.name === 'ADD_CUSTOMER_FAILED' && errorItem.message.toLowerCase().indexOf('invalid parameter: password')) {
@@ -1505,7 +1613,7 @@
                 var customer = this.get('customer'),
                     contactInfo = this.get(infoName),
                     process = [function () {
-                      
+
                         // Update contact if a valid contact ID exists
                         if (orderContact.id && orderContact.id > 0) {
                             return customer.apiModel.updateContact(orderContact);
@@ -1521,7 +1629,7 @@
                     }];
                 var contactInfoContactName = contactInfo.get(contactName);
                 var customerContacts = customer.get('contacts');
-                    
+
                 if (!contactInfoContactName.get('accountId')) {
                     contactInfoContactName.set('accountId', customer.id);
                 }
@@ -1570,13 +1678,13 @@
             isContactModified: function(orderContact, customerContact) {
                 var validContact = orderContact && customerContact && orderContact.id === customerContact.id;
                 var addressChanged = validContact && !_.isEqual(orderContact.address, customerContact.address);
-                //Note: Only home phone is used on the checkout page     
+                //Note: Only home phone is used on the checkout page
                 var phoneChanged = validContact && orderContact.phoneNumbers.home &&
                                     (!customerContact.phoneNumbers.home || orderContact.phoneNumbers.home !== customerContact.phoneNumbers.home);
 
                 //Check whether any of the fields available in the contact UI on checkout page is modified
                 return validContact &&
-                    (addressChanged || phoneChanged || 
+                    (addressChanged || phoneChanged ||
                     orderContact.email !== customerContact.email || orderContact.firstName !== customerContact.firstName ||
                     orderContact.lastNameOrSurname !== customerContact.lastNameOrSurname);
             },
@@ -1646,6 +1754,24 @@
             isSavingNewCustomer: function() {
                 return this.get('createAccount') && !this.customerCreated;
             },
+            isNonMozuCheckout: function() {
+                var activePayments = this.apiModel.getActivePayments();
+                if (activePayments && activePayments.length === 0) return false;
+                return (activePayments && (_.findWhere(activePayments, { paymentType: 'PayPalExpress2' })));
+            },
+            validateReviewCheckoutFields: function(){
+                var validationResults = [];
+                for (var field in checkoutPageValidation) {
+                    if(checkoutPageValidation.hasOwnProperty(field)) {
+                        var result = this.validate(field);
+                        if(result) {
+                            validationResults.push(result);
+                        }
+                    }
+                }
+
+                return validationResults.length > 0;
+            },
 
             submit: function () {
                 var order = this,
@@ -1665,6 +1791,33 @@
                         });
                     }];
 
+                var storefrontOrderAttributes = require.mozuData('pagecontext').storefrontOrderAttributes;
+                if(storefrontOrderAttributes && storefrontOrderAttributes.length > 0) {
+                    var updateAttrs = [];
+                    storefrontOrderAttributes.forEach(function(attr){
+                        var attrVal = order.get('orderAttribute-' + attr.attributeFQN);
+                        if(attrVal) {
+                            updateAttrs.push({
+                                'fullyQualifiedName': attr.attributeFQN,
+                                'values': [ attrVal ]
+                            });
+                        }
+                    });
+
+                    if(updateAttrs.length > 0){
+                        process.push(function(){
+                            return order.apiUpdateAttributes(updateAttrs);
+                        }, function() {
+                            return order.apiGet();
+                        });
+                    }
+                }
+
+                if (this.isNonMozuCheckout()) {
+                    billingContact.set("address", null);
+                }
+
+
                 if (this.isSubmitting) return;
 
                 this.isSubmitting = true;
@@ -1672,21 +1825,23 @@
                 if (requiresBillingInfo && !billingContact.isValid()) {
                     // reconcile the empty address after we got back from paypal and possibly other situations.
                     // also happens with visacheckout ..
-                    var billingInfoFromPayment = this.apiModel.getCurrentPayment().billingInfo;
+                    var billingInfoFromPayment = (this.apiModel.getCurrentPayment() || {}).billingInfo;
                     billingInfo.set(billingInfoFromPayment, { silent: true });
                 }
 
                 this.syncBillingAndCustomerEmail();
                 this.setFulfillmentContactEmail();
 
-                if (nonStoreCreditTotal > 0 && this.validate()) {
+                // skip payment validation, if there are no payments, but run the attributes and accept terms validation.
+                if ( ((nonStoreCreditTotal > 0 && this.validate()) || this.validateReviewCheckoutFields()) && ( !this.isNonMozuCheckout() || this.validate().agreeToTerms)) {
                     this.isSubmitting = false;
                     return false;
                 }
+
                 this.isLoading(true);
 
                 if (isSavingNewCustomer) {
-                    process.unshift(this.addNewCustomer); 
+                    process.unshift(this.addNewCustomer);
                 }
 
                 var activePayments = this.apiModel.getActivePayments();
@@ -1708,7 +1863,7 @@
                 }
 
                 //save contacts
-                if (isAuthenticated || isSavingNewCustomer) {
+                if (!this.isNonMozuCheckout() && isAuthenticated || isSavingNewCustomer) {
                     if (!isSameBillingShippingAddress && !isSavingCreditCard) {
                         if (requiresFulfillmentInfo) process.push(this.addShippingContact);
                         if (requiresBillingInfo) process.push(this.addBillingContact);
@@ -1718,9 +1873,9 @@
                         process.push(this.addShippingContact);
                     }
                 }
-               
+
                 process.push(/*this.finalPaymentReconcile, */this.apiCheckout);
-                
+
                 api.steps(process).then(this.onCheckoutSuccess, this.onCheckoutError);
 
             },

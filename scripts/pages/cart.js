@@ -1,7 +1,23 @@
-define(['modules/backbone-mozu', 'underscore', 'modules/jquery-mozu', 'modules/models-cart', 'modules/cart-monitor', 'hyprlivecontext', 'hyprlive', 'modules/preserve-element-through-render'], function (Backbone, _, $, CartModels, CartMonitor, HyprLiveContext, Hypr, preserveElement) {
+define(['modules/api',
+        'modules/backbone-mozu',
+        'underscore',
+        'modules/jquery-mozu',
+        'modules/models-cart',
+        'modules/cart-monitor',
+        'hyprlivecontext',
+        'hyprlive',
+        'modules/preserve-element-through-render',
+        'modules/modal-dialog',
+        'modules/xpress-paypal',
+        'modules/models-location'
+      ], function (api, Backbone, _, $, CartModels, CartMonitor, HyprLiveContext, Hypr, preserveElement, modalDialog, paypal, LocationModels) {
+
+
     var CartView = Backbone.MozuView.extend({
         templateName: "modules/cart/cart-table",
         initialize: function () {
+            this.pickerDialog = this.initializeStorePickerDialog();
+
             var me = this;
 
             //setup coupon code text box enter.
@@ -24,9 +40,10 @@ define(['modules/backbone-mozu', 'underscore', 'modules/jquery-mozu', 'modules/m
                 window.onVisaCheckoutReady = initVisaCheckout;
                 require([pageContext.visaCheckoutJavaScriptSdkUrl], initVisaCheckout);
             }
+
         },
         render: function() {
-            preserveElement(this, ['.v-button'], function() {
+            preserveElement(this, ['.v-button', '.p-button'], function() {
                 Backbone.MozuView.prototype.render.call(this);
             });
         },
@@ -39,6 +56,7 @@ define(['modules/backbone-mozu', 'underscore', 'modules/jquery-mozu', 'modules/m
             if (item && !isNaN(newQuantity)) {
                 item.set('quantity', newQuantity);
                 item.saveQuantity();
+
             }
         },400),
         onQuantityUpdateFailed: function(model, oldQuantity) {
@@ -66,6 +84,202 @@ define(['modules/backbone-mozu', 'underscore', 'modules/jquery-mozu', 'modules/m
             this.model.apiDel().then(function() {
                 window.location.reload();
             });
+        },
+        initializeStorePickerDialog: function(){
+
+          var me = this;
+
+          var options = {
+            elementId: "mz-location-selector",
+            body: "", //to be populated by makeLocationPickerBody
+            hasXButton: true,
+            width: "400px",
+            scroll: true,
+            bodyHeight: "600px",
+            backdrop: "static"
+          };
+
+          //Assures that each store select button has the right behavior
+          $('#mz-location-selector').on('click', '.mz-store-select-button', function(){
+            me.assignPickupLocation($(this).attr('mz-store-select-data'));
+          });
+
+          //Assures that the radio buttons reflect the accurate fulfillment method
+          //if the dialog is closed before a store is picked.
+          $('.modal-header').on('click', '.close', function(){
+            me.render();
+          });
+
+          return modalDialog.init(options);
+
+        },
+        changeStore: function(e){
+          //click handler for change store link.launches store picker
+          var cartItemId = $(e.currentTarget).data('mz-cart-item');
+          var cartItem = this.model.get("items").get(cartItemId);
+          var productCode = cartItem.apiModel.data.product.variationProductCode || cartItem.apiModel.data.product.productCode;
+          this.pickStore(productCode, cartItemId);
+        },
+        pickStore: function(productCode, cartItemId){
+          var me = this;
+          var locationsCollection = new LocationModels.LocationCollection();
+
+          locationsCollection.apiGetForProduct({productCode: productCode}).then(function(collection){
+            locationsCollection.get('items').forEach(function(item){
+              me.model.get('storeLocationsCache').addLocation({code: item.get('code'), name: item.get('name')});
+            });
+
+            var $bodyElement = $('#mz-location-selector').find('.modal-body');
+            $bodyElement.attr('mz-cart-item', cartItemId);
+            if (collection.length === 0){
+              me.pickerDialog.setBody(Hypr.getLabel("noNearbyLocationsProd"));
+            } else {
+              me.pickerDialog.setBody(me.makeLocationPickerBody(locationsCollection, cartItemId));
+            }
+            me.pickerDialog.show();
+
+          }, function(error){
+            //error
+          });
+
+        },
+        getInventoryData: function(id, productCode){
+          //Gets basic inventory data based on product code.
+          return window.cartView.cartView.model.get('items').get(id).get('product').apiGetInventory({
+            productCode: productCode
+          });
+        },
+        changeFulfillmentMethod: function(e){
+          //Called when a radio button is clicked.
+
+          var me = this;
+          var $radioButton = $(e.currentTarget),
+              cartItemId = $radioButton.data('mz-cart-item'),
+              value = $radioButton.val(),
+              cartItem = this.model.get("items").get(cartItemId);
+
+              if (cartItem.get('fulfillmentMethod')==value){
+                //The user clicked the radio button for the fulfillment type that
+                //was already selected so we can just quit.
+                return 0;
+              }
+
+              if (value=="Ship"){
+                var oldFulfillmentMethod = cartItem.get('fulfillmentMethod');
+                var oldPickupLocation = cartItem.get('fulfillmentLocationName');
+                var oldLocationCode = cartItem.get('fulfillmentLocationCode');
+
+                cartItem.set('fulfillmentMethod', value);
+                cartItem.set('fulfillmentLocationName', '');
+                cartItem.set('fulfillmentLocationCode', '');
+
+                cartItem.apiUpdate().then(function(success){}, function(error){
+                  cartItem.set('fulfillmentMethod', oldFulfillmentMethod);
+                  cartItem.set('fulfillmentLocationName', oldPickupLocation);
+                  cartItem.set('fulfillmentLocationCode', oldLocationCode);
+
+                });
+
+
+              } else if (value=="Pickup"){
+                  //first we get the correct product code for this item.
+                  //If the product is a variation, we want to pass that when searching for inventory.
+                  var productCode = cartItem.apiModel.data.product.variationProductCode || cartItem.apiModel.data.product.productCode;
+                  //pickStore function makes api calls, then builds/launches modal dialog
+                  this.pickStore(productCode, cartItemId);
+              }
+
+        },
+        makeLocationPickerBody: function(locationsCollection, cartItemId){
+          /*
+          Uses a list of locations to build HTML to to stick into the location
+          picker dialog.
+          locationsCollection should be a be a list of locations that includes
+          a 'quanity' attribute for the cart item's stock level.
+          */
+
+          var locations = locationsCollection.toJSON();
+          var body = "";
+
+          locations.items.forEach(function(location){
+            var stockLevel = location.quantity;
+
+            //Piece together UI for a single location listing
+            var locationSelectDiv = $('<div>', { "class": "location-select-option", "style": "display:flex", "data-mz-cart-item": cartItemId });
+            var leftSideDiv = $('<div>', {"style": "flex:1"});
+            var rightSideDiv = $('<div>', {"style": "flex:1"});
+            leftSideDiv.append('<h4 style="margin: 6.25px 0 6.25px">'+location.name+'</h4>');
+            /*
+            The behavior of this dialog currently reflects the functionality of
+            locations.hypr.live. It should be noted that we currently do not
+            allow backorder on in-store pickup items, even if the product and
+            location allow for it. Both that page and this dialog will need to be
+            modified if this changes.
+            */
+
+            var address = location.address;
+
+            leftSideDiv.append($('<div>'+address.address1+'</div>'));
+            if(address.address2){leftSideDiv.append($('<div>'+address.address2+'</div>'));}
+            if(address.address3){leftSideDiv.append($('<div>'+address.address3+'</div>'));}
+            if(address.address4){leftSideDiv.append($('<div>'+address.address4+'</div>'));}
+            leftSideDiv.append($('<div>'+address.cityOrTown+', '+address.stateOrProvince+' '+address.postalOrZipCode+'</div>'));
+              var $selectButton;
+
+              if (stockLevel>0){
+                  leftSideDiv.append("<p class='mz-locationselect-available'>"+Hypr.getLabel("availableNow")+"</p>");
+                  var buttonData = {
+                    locationCode: location.code,
+                    locationName: location.name,
+                    cartItemId: cartItemId
+                  };
+
+                  $selectButton = $("<button>", {"type": "button", "class": "mz-button mz-store-select-button", "style": "margin:25% 0 0 25%", "aria-hidden": "true", "mz-store-select-data": JSON.stringify(buttonData) });
+                  $selectButton.text(Hypr.getLabel("selectStore"));
+                  rightSideDiv.append($selectButton);
+
+                } else {
+                  leftSideDiv.append("<p class='mz-locationselect-unavailable'>"+Hypr.getLabel("outOfStock")+"</p>");
+                  $selectButton = $("<button>", {"type": "button", "class": "mz-button is-disabled mz-store-select-button", "aria-hidden": "true", "disabled":"disabled", "style": "margin:25% 0 0 25%"});
+                  $selectButton.text(Hypr.getLabel("selectStore"));
+                  rightSideDiv.append($selectButton);
+                }
+
+                locationSelectDiv.append(leftSideDiv);
+                locationSelectDiv.append(rightSideDiv);
+                body+=locationSelectDiv.prop('outerHTML');
+
+          });
+
+          return body;
+        },
+        assignPickupLocation: function(jsonStoreSelectData){
+          //called by Select Store button from store picker dialog.
+          //Makes the actual change to the item using data held by the button
+          //in the store picker.
+
+          var me = this;
+          this.pickerDialog.hide();
+
+          var storeSelectData = JSON.parse(jsonStoreSelectData);
+          var cartItem = this.model.get("items").get(storeSelectData.cartItemId);
+          //in case there is an error with the api call, we want to get all of the
+          //current data for the cartItem before we change it so that we can
+          //change it back if we need to.
+          var oldFulfillmentMethod = cartItem.get('fulfillmentMethod');
+          var oldPickupLocation = cartItem.get('fulfillmentLocationName');
+          var oldLocationCode = cartItem.get('fulfillmentLocationCode');
+
+          cartItem.set('fulfillmentMethod', 'Pickup');
+          cartItem.set('fulfillmentLocationName', storeSelectData.locationName);
+          cartItem.set('fulfillmentLocationCode', storeSelectData.locationCode);
+          cartItem.apiUpdate().then(function(success){}, function(error){
+            cartItem.set('fulfillmentMethod', oldFulfillmentMethod);
+            cartItem.set('fulfillmentLocationName', oldPickupLocation);
+            cartItem.set('fulfillmentLocationCode', oldLocationCode);
+            me.render();
+          });
+
         },
         proceedToCheckout: function () {
             //commenting  for ssl for now...
@@ -99,62 +313,69 @@ define(['modules/backbone-mozu', 'underscore', 'modules/jquery-mozu', 'modules/m
         }
     });
 
-    /* begin visa checkout */
-    function initVisaCheckout (model, subtotal) {
-        var delay = 500;
-        var visaCheckoutSettings = HyprLiveContext.locals.siteContext.checkoutSettings.visaCheckout;
-        var apiKey = visaCheckoutSettings.apiKey;
-        var clientId = visaCheckoutSettings.clientId;
+  function renderVisaCheckout(model) {
 
-        // if this function is being called on init rather than after updating cart total
-        if (!model) {
-            model = CartModels.Cart.fromCurrent();
-            subtotal = model.get('subtotal');
-            delay = 0;
+    var visaCheckoutSettings = HyprLiveContext.locals.siteContext.checkoutSettings.visaCheckout;
+    var apiKey = visaCheckoutSettings.apiKey;
+    var clientId = visaCheckoutSettings.clientId;
 
-            if (!window.V) {
-                //console.warn( 'visa checkout has not been initilized properly');
-                return false;
-            }
-            // on success, attach the encoded payment data to the window
-            // then turn the cart into an order and advance to checkout
-            window.V.on("payment.success", function(payment) {
-                // payment here is an object, not a string. we'll stringify it later
-                var $form = $('#cartform');
-                
-                _.each({
+    //In case for some reason a model is not passed
+    if(!model) {
+      model = CartModels.Cart.fromCurrent();
+    }
 
-                    digitalWalletData: JSON.stringify(payment),
-                    digitalWalletType: "VisaCheckout"
-
-                }, function(value, key) {
-                    
-                    $form.append($('<input />', {
-                        type: 'hidden',
-                        name: key,
-                        value: value
-                    }));
-
-                });
-
-                $form.submit();
-
-            });
-
-        }
-
-        // delay V.init() while we wait for MozuView to re-render
-        // we could probably listen for a "render" event instead
-        _.delay(window.V.init, delay, {
+    function initVisa(){
+      var delay = 200;
+      if(window.V) {
+          window.V.init({
             apikey: apiKey,
             clientId: clientId,
             paymentRequest: {
                 currencyCode: model ? model.get('currencyCode') : 'USD',
-                subtotal: "" + subtotal
-            }
-        });
+                subtotal: "" + model.get('subtotal')
+            }});
+          return;
+        }
+        _.delay(initVisa, delay);
+    }
+
+    initVisa();
+
+  }
+    /* begin visa checkout */
+    function initVisaCheckout () {
+      if (!window.V) {
+          //console.warn( 'visa checkout has not been initilized properly');
+          return false;
+      }
+
+      // on success, attach the encoded payment data to the window
+      // then turn the cart into an order and advance to checkout
+      window.V.on("payment.success", function(payment) {
+          // payment here is an object, not a string. we'll stringify it later
+          var $form = $('#cartform');
+
+          _.each({
+
+              digitalWalletData: JSON.stringify(payment),
+              digitalWalletType: "VisaCheckout"
+
+          }, function(value, key) {
+
+              $form.append($('<input />', {
+                  type: 'hidden',
+                  name: key,
+                  value: value
+              }));
+
+          });
+
+          $form.submit();
+
+      });
     }
     /* end visa checkout */
+
 
     $(document).ready(function() {
         var cartModel = CartModels.Cart.fromCurrent(),
@@ -170,16 +391,24 @@ define(['modules/backbone-mozu', 'underscore', 'modules/jquery-mozu', 'modules/m
 
         cartModel.on('ordercreated', function (order) {
             cartModel.isLoading(true);
-            window.location = "/checkout/" + order.prop('id');
+            window.location = (HyprLiveContext.locals.siteContext.siteSubdirectory||'') + '/checkout/' + order.prop('id');
         });
 
         cartModel.on('sync', function() {
             CartMonitor.setCount(cartModel.count());
         });
 
+        cartModel.checkBOGA();
+
+
         window.cartView = cartViews;
 
         CartMonitor.setCount(cartModel.count());
+
+        _.invoke(cartViews, 'render');
+
+        renderVisaCheckout(cartModel);
+        paypal.loadScript();
     });
 
 });

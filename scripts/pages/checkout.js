@@ -1,4 +1,15 @@
-require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu", "modules/models-checkout", "modules/views-messages", "modules/cart-monitor", 'hyprlivecontext', 'modules/editable-view', 'modules/preserve-element-through-render'], function ($, _, Hypr, Backbone, CheckoutModels, messageViewFactory, CartMonitor, HyprLiveContext, EditableView, preserveElements) {
+require(["modules/jquery-mozu", 
+    "underscore", "hyprlive", 
+    "modules/backbone-mozu", 
+    "modules/models-checkout", 
+    "modules/views-messages", 
+    "modules/cart-monitor", 
+    'hyprlivecontext', 
+    'modules/editable-view', 
+    'modules/preserve-element-through-render',
+    'modules/xpress-paypal'], 
+    function ($, _, Hypr, Backbone, CheckoutModels, messageViewFactory, CartMonitor, HyprLiveContext, EditableView, preserveElements,PayPal) {
+
 
     var CheckoutStepView = EditableView.extend({
         edit: function () {
@@ -55,7 +66,7 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
         },
 
         editCart: function () {
-            window.location = "/cart";
+            window.location =  (HyprLiveContext.locals.siteContext.siteSubdirectory||'') + "/cart";
         },
         
         onOrderCreditChanged: function (order, scope) {
@@ -122,7 +133,6 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
             }
 
         return fieldDefs;
-
     };
 
     var visaCheckoutSettings = HyprLiveContext.locals.siteContext.checkoutSettings.visaCheckout;
@@ -180,6 +190,9 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
             this.listenTo(this.model, 'orderPayment', function (order, scope) {
                     this.render();
             }, this);
+            this.listenTo(this.model, 'billingContactUpdate', function (order, scope) {
+                    this.render();
+            }, this);
             this.listenTo(this.model, 'change:savedPaymentMethodId', function (order, scope) {
                 $('[data-mz-saved-cvv]').val('').change();
                 this.render();
@@ -193,14 +206,14 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
             this.model.clear();
             this.model.resetAddressDefaults();
             if(HyprLiveContext.locals.siteContext.checkoutSettings.purchaseOrder.isEnabled) {
-                this.model.setPurchaseOrderInfo();
+                this.model.resetPOInfo();
             }
         },
         updatePurchaseOrderPaymentTerm: function(e) {
             this.model.setPurchaseOrderPaymentTerm(e.target.value);
         },
         render: function() {
-            preserveElements(this, ['.v-button'], function() {
+            preserveElements(this, ['.v-button', '.p-button'], function() {
                 CheckoutStepView.prototype.render.apply(this, arguments);
             });
             var status = this.model.stepStatus();
@@ -209,6 +222,9 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
                 require([pageContext.visaCheckoutJavaScriptSdkUrl]);
                 this.visaCheckoutInitialized = true;
             }
+
+            if (this.$(".p-button").length > 0)
+                PayPal.loadScript();
         },
         updateAcceptsMarketing: function(e) {
             this.model.getOrder().set('acceptsMarketing', $(e.currentTarget).prop('checked'));
@@ -220,13 +236,18 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
         },
         beginEditingCard: function() {
             var me = this;
-            var isVisaCheckout = this.model.visaCheckoutFlowComplete();
-            if (!isVisaCheckout) {
+            if (!this.model.isExternalCheckoutFlowComplete()) {
                 this.editing.savedCard = true;
                 this.render();
             } else {
-                this.doModelAction('cancelVisaCheckout').then(function() {
-                    me.editing.savedCard = false;
+                this.cancelExternalCheckout();
+            }
+        },
+        beginEditingExternalPayment: function () {
+            var me = this;
+            if (this.model.isExternalCheckoutFlowComplete()) {
+                this.doModelAction('cancelExternalCheckout').then(function () {
+                    me.editing.savedCard = true;
                     me.render();
                 });
             }
@@ -242,6 +263,13 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
         cancelApplyCredit: function () {
             this.model.closeApplyCredit();
             this.render();
+        },
+        cancelExternalCheckout: function () {
+            var me = this;
+            this.doModelAction('cancelExternalCheckout').then(function () {
+                me.editing.savedCard = false;
+                me.render();
+            });
         },
         finishApplyCredit: function () {
             var self = this;
@@ -283,11 +311,11 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
         onEnterDigitalCreditCode: function(model, code) {
             if (code && !this.codeEntered) {
                 this.codeEntered = true;
-                this.$el.find('button').prop('disabled', false);
+                this.$el.find('input#digital-credit-code').siblings('button').prop('disabled', false);
             }
             if (!code && this.codeEntered) {
                 this.codeEntered = false;
-                this.$el.find('button').prop('disabled', true);
+                this.$el.find('input#digital-credit-code').siblings('button').prop('disabled', true);
             }
         },
         enableDigitalCredit: function(e) {
@@ -408,6 +436,23 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
         autoUpdate: ['shopperNotes.comments']
     });
 
+    var attributeFields = function(){
+        var me = this;
+
+        var fields = [];
+
+        var storefrontOrderAttributes = require.mozuData('pagecontext').storefrontOrderAttributes;
+        if(storefrontOrderAttributes && storefrontOrderAttributes.length > 0) {
+
+            storefrontOrderAttributes.forEach(function(attributeDef){
+                fields.push('orderAttribute-' + attributeDef.attributeFQN);
+            }, this);
+
+        }
+
+        return fields;
+    };
+
     var ReviewOrderView = Backbone.MozuView.extend({
         templateName: 'modules/checkout/step-review',
         autoUpdate: [
@@ -416,7 +461,7 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
             'emailAddress',
             'password',
             'confirmPassword'
-        ],
+        ].concat(attributeFields()),
         renderOnChange: [
             'createAccount',
             'isReady'
@@ -436,6 +481,7 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
                 me.$('[data-mz-validationmessage-for="emailAddress"]').html(Hypr.getLabel("customerAlreadyExists", user, encodeURIComponent(window.location.pathname)));
             });
         },
+
         submit: function () {
             var self = this;
             _.defer(function () {
@@ -473,6 +519,8 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
       return conf;
     };
 
+
+
     $(document).ready(function () {
 
         var $checkoutView = $('#checkout-form'),
@@ -487,7 +535,7 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
                 steps: {
                     shippingAddress: new ShippingAddressView({
                         el: $('#step-shipping-address'),
-                        model: checkoutModel.get("fulfillmentInfo").get("fulfillmentContact")
+                        model: checkoutModel.get('fulfillmentInfo').get('fulfillmentContact')
                     }),
                     shippingInfo: new ShippingInfoView({
                         el: $('#step-shipping-method'),
@@ -525,7 +573,7 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
 
         checkoutModel.on('complete', function() {
             CartMonitor.setCount(0);
-            window.location = "/checkout/" + checkoutModel.get('id') + "/confirmation";
+            window.location = (HyprLiveContext.locals.siteContext.siteSubdirectory||'') + "/checkout/" + checkoutModel.get('id') + "/confirmation";
         });
 
         var $reviewPanel = $('#step-review');
@@ -534,7 +582,7 @@ require(["modules/jquery-mozu", "underscore", "hyprlive", "modules/backbone-mozu
                 setTimeout(function () { window.scrollTo(0, $reviewPanel.offset().top); }, 750);
             }
         });
-
+ 
         _.invoke(checkoutViews.steps, 'initStepView');
 
         $checkoutView.noFlickerFadeIn();

@@ -1,5 +1,7 @@
-require(['modules/jquery-mozu', 'hyprlive', 'modules/backbone-mozu', 'modules/models-location', 'modules/models-product'],
-    function($, Hypr, Backbone, LocationModels, ProductModels) {
+require(['modules/jquery-mozu', 'hyprlive', 'modules/backbone-mozu', 'modules/models-location', 'modules/models-product',
+    'hyprlivecontext'],
+    function($, Hypr, Backbone, LocationModels, ProductModels,
+        HyprLiveContext) {
 
         var positionErrorLabel = Hypr.getLabel('positionError'),
 
@@ -58,9 +60,10 @@ require(['modules/jquery-mozu', 'hyprlive', 'modules/backbone-mozu', 'modules/mo
             },
             addToCartForPickup: function (e) {
                 var $target = $(e.currentTarget),
-                    loc = $target.data('mzLocation');
+                    loc = $target.data('mzLocation'),
+                    name = $target.data('mzName');
                 $target.parent().addClass('is-loading');
-                this.product.addToCartForPickup(loc, this.product.get('quantity'));
+                this.product.addToCartForPickup(loc, name, this.product.get('quantity'));
             },
             setProduct: function (product) {
                 var me = this;
@@ -69,7 +72,7 @@ require(['modules/jquery-mozu', 'hyprlive', 'modules/backbone-mozu', 'modules/mo
                     $(window).on('beforeunload', function() {
                         me.$('.is-loading').removeClass('is-loading');
                     });
-                    window.location.href = "/cart";
+                    window.location.href = (HyprLiveContext.locals.siteContext.siteSubdirectory||'') + "/cart";
                 });
                 this.listenTo(me.product, 'error', function () {
                     this.$('.is-loading').removeClass('is-loading');

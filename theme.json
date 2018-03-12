@@ -83,6 +83,13 @@
             "title": "Your Order Has Shipped"
         },
         {
+          "id": "checkout.changed",
+          "customEditor": "email-orderconfirmation-v2",
+          "properties": {},
+          "template": "email/order-confirmation-v2",
+          "title": "Order Confirmation V2"
+        },
+        {
             "id": "order.changed",
             "customEditor": "email-orderconfirmation",
             "properties": { },
@@ -312,6 +319,20 @@
             "userCreatable": false
         },
         {
+          "entityType": "checkout",
+          "id": "confirmationv2",
+          "template": "confirmationv2",
+          "title": "ConfirmationV2",
+          "userCreatable": false
+        },
+        {
+            "entityType": "checkout",
+            "id": "checkoutv2",
+            "template": "checkoutv2",
+            "title": "Checkout V2",
+            "userCreatable": false
+        },
+        {
             "entityType": "customer",
             "id": "my_account",
             "template": "my-account",
@@ -351,9 +372,17 @@
             "template": "forgot-password",
             "title": "Forgot Password",
             "userCreatable": false
+        },
+        {
+            "entityType": "orderStatus",
+            "id": "orderStatus",
+            "template": "order-status",
+            "title": "Order Status",
+            "userCreatable": false
         }
     ],
     "settings": {
+        "allowFilterByLocationInventory": false,
         "backofficeDateTimeFormat": "m/d/Y H:i:s O",
         "extendedPropertiesEnabled": false,
         "extendedPropertyParameters": "",
@@ -382,6 +411,7 @@
         ],
         "defaultPageSize": 15,
         "defaultSort": "createDate asc",
+        "disableEditOfSavedCreditCard": true,
         "enablePartialCaching": true,
         "loadGoogleFonts": [
             "Source Sans Pro"
@@ -395,6 +425,8 @@
         "listProductShortDesc": true,
         "listVolumePricing": false,
         "listProductThumbSize": 160,
+        "locationInventoryFilterText": "Shop My Store",
+        "maxFilterLocations": 50,
         "maxProductImageThumbnailSize": 50,
         "maxProductSummaryWords": 40,
         "maxTopLevelNavItems": 8,
